@@ -8,6 +8,9 @@ from utils import sync_networks, sync_grads
 from replay_buffer import replay_buffer
 from normalizer import normalizer
 from her import her_sampler
+from tqdm import tqdm
+
+import slackweb
 
 """
 ddpg with HER (MPI-version)
@@ -18,9 +21,19 @@ class ddpg_agent:
         self.args = args
         self.env = env
         self.env_params = env_params
+
+        # learning time start from: -> int 
+        self.learning_from = self.args.learning_from
+        self.weight_save_dir = 'weight_dir/'
+
         # create the network
         self.actor_network = actor(env_params)
         self.critic_network = critic(env_params)
+
+        if self.learning_from:
+            print('Learning Restart From {}'.format(self.learning_from))
+            self.actor_network, self.critic_network = self._load_weights(self.actor_network, self.critic_network)
+
         # sync the networks across the cpus
         sync_networks(self.actor_network)
         sync_networks(self.critic_network)
@@ -54,6 +67,11 @@ class ddpg_agent:
             self.model_path = os.path.join(self.args.save_dir, self.args.env_name)
             if not os.path.exists(self.model_path):
                 os.mkdir(self.model_path)
+        
+        self.slack = slackweb.Slack(url='https://hooks.slack.com/services/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')
+        self.slack.notify(text='===============================')
+        self.slack.notify(text='==== Training Start from {} !! ===='.format(self.learning_from))
+        self.slack.notify(text='===============================')
 
     def learn(self):
         """
@@ -62,7 +80,7 @@ class ddpg_agent:
         """
         # start to collect samples
         for epoch in range(self.args.n_epochs):
-            for _ in range(self.args.n_cycles):
+            for _ in tqdm(range(self.args.n_cycles)):
                 mb_obs, mb_ag, mb_g, mb_actions = [], [], [], []
                 for _ in range(self.args.num_rollouts_per_mpi):
                     # reset the rollouts
@@ -113,9 +131,12 @@ class ddpg_agent:
             # start to do the evaluation
             success_rate = self._eval_agent()
             if MPI.COMM_WORLD.Get_rank() == 0:
-                print('[{}] epoch is: {}, eval success rate is: {:.3f}'.format(datetime.now(), epoch, success_rate))
+                text = '[{}] epoch is: {}, eval success rate is: {:.3f}'.format(datetime.now(), epoch+self.learning_from, success_rate)
+                print(text)
+                self.slack.notify(text=text)
                 torch.save([self.o_norm.mean, self.o_norm.std, self.g_norm.mean, self.g_norm.std, self.actor_network.state_dict()], \
                             self.model_path + '/model.pt')
+            self._save_weights(self.actor_network, self.critic_network, epoch)
 
     # pre_process the inputs
     def _preproc_inputs(self, obs, g):
@@ -247,6 +268,7 @@ class ddpg_agent:
                     # convert the actions
                     actions = pi.detach().cpu().numpy().squeeze()
                 observation_new, _, _, info = self.env.step(actions)
+                self.env.render()
                 obs = observation_new['observation']
                 g = observation_new['desired_goal']
                 per_success_rate.append(info['is_success'])
@@ -254,4 +276,16 @@ class ddpg_agent:
         total_success_rate = np.array(total_success_rate)
         local_success_rate = np.mean(total_success_rate[:, -1])
         global_success_rate = MPI.COMM_WORLD.allreduce(local_success_rate, op=MPI.SUM)
+        self.env.close()
         return global_success_rate / MPI.COMM_WORLD.Get_size()
+    
+
+    def _load_weights(self, actor_net, critic_net):
+        actor_net.load_state_dict(torch.load(self.weight_save_dir + 'actor_' + str(self.learning_from)))
+        critic_net.load_state_dict(torch.load(self.weight_save_dir + 'critic_' + str(self.learning_from)))
+        return actor_net, critic_net
+    
+    def _save_weights(self, actor_net, critic_net, save_num):
+        torch.save(actor_net.state_dict(), self.weight_save_dir + 'actor_' + str(save_num+self.learning_from))
+        torch.save(critic_net.state_dict(), self.weight_save_dir + 'critic_' + str(save_num+self.learning_from))
+

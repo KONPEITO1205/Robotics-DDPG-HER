@@ -5,6 +5,9 @@ from arguments import get_args
 from mpi4py import MPI
 from subprocess import CalledProcessError
 from ddpg_agent import ddpg_agent
+import gym_dobot.envs as envs
+import glfw
+from types import MethodType
 
 """
 train the agent, the MPI part code is copy from openai baselines(https://github.com/openai/baselines/blob/master/baselines/her)
@@ -21,9 +24,19 @@ def get_env_params(env):
     params['max_timesteps'] = env._max_episode_steps
     return params
 
+def env_wrapper(env):
+    def close(self):
+        if self.viewer is not None:
+            glfw.destroy_window(self.viewer.window)
+            self.viewer = None
+
+    env.unwrapped.close = MethodType(close, env.unwrapped)
+    return env
+
 def launch(args):
     # create the ddpg_agent
-    env = gym.make(args.env_name)
+    # env = gym.make(args.env_name)
+    env = env_wrapper(gym.make(args.env_name))
     # get the environment parameters
     env_params = get_env_params(env)
     # create the ddpg agent to interact with the environment 
