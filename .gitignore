@@ -120,5 +120,5 @@ package-lock.json
 
 weight_dir/*
 
-cov_weight_dir/*
+conv_weight_dir/*
 
