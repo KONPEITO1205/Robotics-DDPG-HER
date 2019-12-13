@@ -118,4 +118,7 @@ node_modules/*
 
 package-lock.json
 
+weight_dir/*
+
+cov_weight_dir/*
 
