@@ -3,6 +3,7 @@ from models import actor
 from arguments import get_args
 import gym
 import numpy as np
+import gym_dobot.envs as envs
 
 # process the inputs
 def process_inputs(o, g, o_mean, o_std, g_mean, g_std, args):
