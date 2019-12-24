@@ -319,13 +319,13 @@ class ddpg_agent:
     def _load_weights(self, actor_net, critic_net):
         actor_net.load_state_dict(torch.load(self.weight_save_dir + 'actor_' + str(self.learning_from)))
         critic_net.load_state_dict(torch.load(self.weight_save_dir + 'critic_' + str(self.learning_from)))
-        g_norm_mean = torch.load(self.weight_save_dir + 'g_norm_mean_' + str(save_num+self.learning_from))
-        g_norm_std = torch.load(self.weight_save_dir + 'g_norm_std_' + str(save_num+self.learning_from))
+        g_norm_mean = torch.load(self.weight_save_dir + 'g_norm_mean_' + str(self.learning_from))
+        g_norm_std = torch.load(self.weight_save_dir + 'g_norm_std_' + str(self.learning_from))
         return actor_net, critic_net, g_norm_mean, g_norm_std
     
     def _save_weights(self, actor_net, critic_net, g_norm_mean, g_norm_std, save_num):
         torch.save(actor_net.state_dict(), self.weight_save_dir + 'actor_' + str(save_num+self.learning_from))
         torch.save(critic_net.state_dict(), self.weight_save_dir + 'critic_' + str(save_num+self.learning_from))
         torch.save(g_norm_mean, self.weight_save_dir + 'g_norm_mean_' + str(save_num+self.learning_from))
-        torch.save(g_norm_std, self.weight_save_dir + 'g_norm_std' + str(save_num+self.learning_from))
+        torch.save(g_norm_std, self.weight_save_dir + 'g_norm_std_' + str(save_num+self.learning_from))
 
