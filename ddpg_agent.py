@@ -10,12 +10,21 @@ from normalizer import normalizer
 from her import her_sampler
 from tqdm import tqdm
 
+from PIL import Image
 import slackweb
+
+import config
 
 """
 ddpg with HER (MPI-version)
 
 """
+
+# TODO: inputs are cherry coordinate and goal position
+# TODO: cherry coordinate is predicted from vision model(trained by using yolo or SSD)
+# TODO: goal position is given by system
+
+
 class ddpg_agent:
     def __init__(self, args, env, env_params):
         self.args = args
@@ -68,10 +77,10 @@ class ddpg_agent:
             if not os.path.exists(self.model_path):
                 os.mkdir(self.model_path)
         
-        self.slack = slackweb.Slack(url='https://hooks.slack.com/services/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')
-        self.slack.notify(text='===============================')
-        self.slack.notify(text='==== Training Start from {} !! ===='.format(self.learning_from))
-        self.slack.notify(text='===============================')
+        # self.slack = slackweb.Slack(url=config.URL)
+        # self.slack.notify(text='===============================')
+        # self.slack.notify(text='==== Training Start from {} !! ===='.format(self.learning_from))
+        # self.slack.notify(text='===============================')
 
     def learn(self):
         """
@@ -133,7 +142,7 @@ class ddpg_agent:
             if MPI.COMM_WORLD.Get_rank() == 0:
                 text = '[{}] epoch is: {}, eval success rate is: {:.3f}'.format(datetime.now(), epoch+self.learning_from, success_rate)
                 print(text)
-                self.slack.notify(text=text)
+                # self.slack.notify(text=text)
                 torch.save([self.o_norm.mean, self.o_norm.std, self.g_norm.mean, self.g_norm.std, self.actor_network.state_dict()], \
                             self.model_path + '/model.pt')
             self._save_weights(self.actor_network, self.critic_network, epoch)
@@ -278,7 +287,7 @@ class ddpg_agent:
         global_success_rate = MPI.COMM_WORLD.allreduce(local_success_rate, op=MPI.SUM)
         self.env.close()
         return global_success_rate / MPI.COMM_WORLD.Get_size()
-    
+
 
     def _load_weights(self, actor_net, critic_net):
         actor_net.load_state_dict(torch.load(self.weight_save_dir + 'actor_' + str(self.learning_from)))
