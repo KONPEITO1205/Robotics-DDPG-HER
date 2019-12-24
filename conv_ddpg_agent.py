@@ -10,7 +10,11 @@ from normalizer import normalizer
 from her import her_sampler
 from tqdm import tqdm
 
-# import slackweb
+import cv2
+from PIL import Image
+import slackweb
+
+import config
 
 """
 ddpg with HER (MPI-version)
@@ -24,22 +28,28 @@ class ddpg_agent:
 
         # learning time start from: -> int 
         self.learning_from = self.args.learning_from
-        self.weight_save_dir = 'weight_dir/'
+        self.weight_save_dir = 'conv_weight_dir/'
 
         # create the network
-        self.actor_network = actor(env_params)
-        self.critic_network = critic(env_params)
+        # self.actor_network = actor(env_params, args).double()
+        self.actor_network = actor(env_params, args)
+        # self.critic_network = critic(env_params, args).double()
+        self.critic_network = critic(env_params, args)
+
+        # create the normalizer
+        self.o_norm = normalizer(size=env_params['obs'], default_clip_range=self.args.clip_range)
+        self.g_norm = normalizer(size=env_params['goal'], default_clip_range=self.args.clip_range)
 
         if self.learning_from:
             print('Learning Restart From {}'.format(self.learning_from))
-            self.actor_network, self.critic_network = self._load_weights(self.actor_network, self.critic_network)
+            self.actor_network, self.critic_network, self.g_norm.mean, self.g_norm.std = self._load_weights(self.actor_network, self.critic_network)
 
         # sync the networks across the cpus
         sync_networks(self.actor_network)
         sync_networks(self.critic_network)
         # build up the target network
-        self.actor_target_network = actor(env_params)
-        self.critic_target_network = critic(env_params)
+        self.actor_target_network = actor(env_params, args)
+        self.critic_target_network = critic(env_params, args)
         # load the weights into the target networks
         self.actor_target_network.load_state_dict(self.actor_network.state_dict())
         self.critic_target_network.load_state_dict(self.critic_network.state_dict())
@@ -56,9 +66,6 @@ class ddpg_agent:
         self.her_module = her_sampler(self.args.replay_strategy, self.args.replay_k, self.env.compute_reward)
         # create the replay buffer
         self.buffer = replay_buffer(self.env_params, self.args.buffer_size, self.her_module.sample_her_transitions)
-        # create the normalizer
-        self.o_norm = normalizer(size=env_params['obs'], default_clip_range=self.args.clip_range)
-        self.g_norm = normalizer(size=env_params['goal'], default_clip_range=self.args.clip_range)
         # create the dict for store the model
         if MPI.COMM_WORLD.Get_rank() == 0:
             if not os.path.exists(self.args.save_dir):
@@ -68,10 +75,10 @@ class ddpg_agent:
             if not os.path.exists(self.model_path):
                 os.mkdir(self.model_path)
         
-        # self.slack = slackweb.Slack(url='https://hooks.slack.com/services/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')
-        # self.slack.notify(text='===============================')
-        # self.slack.notify(text='==== Training Start from {} !! ===='.format(self.learning_from))
-        # self.slack.notify(text='===============================')
+        self.slack = slackweb.Slack(url=config.URL)
+        self.slack.notify(text='===============================')
+        self.slack.notify(text='==== Training Start from {} !! ===='.format(self.learning_from))
+        self.slack.notify(text='===============================')
 
     def learn(self):
         """
@@ -87,18 +94,22 @@ class ddpg_agent:
                     ep_obs, ep_ag, ep_g, ep_actions = [], [], [], []
                     # reset the environment
                     observation = self.env.reset()
-                    obs = observation['observation']
+                    # obs = observation['observation']
                     ag = observation['achieved_goal']
                     g = observation['desired_goal']
+                    self.env.render('rgb_array')
+                    obs = self.env.capture()  # -> (1050, 1680, 3)
+                    obs = self.resize_observe(obs)
                     # start to collect samples
                     for t in range(self.env_params['max_timesteps']):
                         with torch.no_grad():
-                            input_tensor = self._preproc_inputs(obs, g)
-                            pi = self.actor_network(input_tensor)
+                            _obs, input_tensor = self._preproc_inputs(obs, g)
+                            pi = self.actor_network(_obs, input_tensor)
                             action = self._select_actions(pi)
                         # feed the actions into the environment
                         observation_new, _, _, info = self.env.step(action)
-                        obs_new = observation_new['observation']
+                        # obs_new = observation_new['observation']
+                        obs_new = self.env.capture()
                         ag_new = observation_new['achieved_goal']
                         # append rollouts
                         ep_obs.append(obs.copy())
@@ -107,10 +118,11 @@ class ddpg_agent:
                         ep_actions.append(action.copy())
                         # re-assign the observation
                         obs = obs_new
+                        obs = self.resize_observe(obs)
                         ag = ag_new
                     ep_obs.append(obs.copy())
                     ep_ag.append(ag.copy())
-                    mb_obs.append(ep_obs)
+                    mb_obs.append(np.array(ep_obs))
                     mb_ag.append(ep_ag)
                     mb_g.append(ep_g)
                     mb_actions.append(ep_actions)
@@ -133,21 +145,26 @@ class ddpg_agent:
             if MPI.COMM_WORLD.Get_rank() == 0:
                 text = '[{}] epoch is: {}, eval success rate is: {:.3f}'.format(datetime.now(), epoch+self.learning_from, success_rate)
                 print(text)
-                # self.slack.notify(text=text)
+                self.slack.notify(text=text)
                 torch.save([self.o_norm.mean, self.o_norm.std, self.g_norm.mean, self.g_norm.std, self.actor_network.state_dict()], \
                             self.model_path + '/model.pt')
-            self._save_weights(self.actor_network, self.critic_network, epoch)
+            self._save_weights(self.actor_network, self.critic_network, self.g_norm.mean, self.g_norm.std, epoch)
+    
+    # resize observed image
+    def resize_observe(self, obs):
+        obs = cv2.resize(obs, (256, 256))
+        obs = obs.transpose((2, 0, 1))
+        return obs
 
     # pre_process the inputs
     def _preproc_inputs(self, obs, g):
-        obs_norm = self.o_norm.normalize(obs)
+        obs = torch.from_numpy(obs).to(torch.float32).unsqueeze(0) / 255
         g_norm = self.g_norm.normalize(g)
-        # concatenate the stuffs
-        inputs = np.concatenate([obs_norm, g_norm])
-        inputs = torch.tensor(inputs, dtype=torch.float32).unsqueeze(0)
+        inputs = torch.tensor(g_norm, dtype=torch.float32).unsqueeze(0)
         if self.args.cuda:
+            obs = obs.cuda()
             inputs = inputs.cuda()
-        return inputs
+        return obs, inputs
     
     # this function will choose action for the agent and do the exploration
     def _select_actions(self, pi):
@@ -192,6 +209,10 @@ class ddpg_agent:
         o = np.clip(o, -self.args.clip_obs, self.args.clip_obs)
         g = np.clip(g, -self.args.clip_obs, self.args.clip_obs)
         return o, g
+    
+    def _preproc_g(self, g):
+        g = np.clip(g, -self.args.clip_obs, self.args.clip_obs)
+        return g
 
     # soft update
     def _soft_update_target_network(self, target, source):
@@ -204,18 +225,23 @@ class ddpg_agent:
         transitions = self.buffer.sample(self.args.batch_size)
         # pre-process the observation and goal
         o, o_next, g = transitions['obs'], transitions['obs_next'], transitions['g']
-        transitions['obs'], transitions['g'] = self._preproc_og(o, g)
-        transitions['obs_next'], transitions['g_next'] = self._preproc_og(o_next, g)
+        # transitions['obs'], transitions['g'] = self._preproc_og(o, g)
+        transitions['g'] = self._preproc_g(g)
+        # transitions['obs_next'], transitions['g_next'] = self._preproc_og(o_next, g)
+        transitions['g_next'] = self._preproc_g(g)
         # start to do the update
-        obs_norm = self.o_norm.normalize(transitions['obs'])
+        # obs_norm = self.o_norm.normalize(transitions['obs'])
         g_norm = self.g_norm.normalize(transitions['g'])
-        inputs_norm = np.concatenate([obs_norm, g_norm], axis=1)
-        obs_next_norm = self.o_norm.normalize(transitions['obs_next'])
+        # inputs_norm = np.concatenate([obs_norm, g_norm], axis=1)
+        # obs_next_norm = self.o_norm.normalize(transitions['obs_next'])
         g_next_norm = self.g_norm.normalize(transitions['g_next'])
-        inputs_next_norm = np.concatenate([obs_next_norm, g_next_norm], axis=1)
+        o = torch.from_numpy(o).to(torch.float32).unsqueeze(0) / 255
+        o_next = torch.from_numpy(o_next).to(torch.float32).unsqueeze(0) / 255
+        # input_tensor = torch.ones(1,3,8,8).to(torch.double)
+
         # transfer them into the tensor
-        inputs_norm_tensor = torch.tensor(inputs_norm, dtype=torch.float32)
-        inputs_next_norm_tensor = torch.tensor(inputs_next_norm, dtype=torch.float32)
+        inputs_norm_tensor = torch.tensor(g_norm, dtype=torch.float32)
+        inputs_next_norm_tensor = torch.tensor(g_next_norm, dtype=torch.float32)
         actions_tensor = torch.tensor(transitions['actions'], dtype=torch.float32)
         r_tensor = torch.tensor(transitions['r'], dtype=torch.float32) 
         if self.args.cuda:
@@ -223,12 +249,16 @@ class ddpg_agent:
             inputs_next_norm_tensor = inputs_next_norm_tensor.cuda()
             actions_tensor = actions_tensor.cuda()
             r_tensor = r_tensor.cuda()
+            o = o.cuda()
+            o_next = o_next.cuda()
         # calculate the target Q value function
         with torch.no_grad():
             # do the normalization
             # concatenate the stuffs
-            actions_next = self.actor_target_network(inputs_next_norm_tensor)
-            q_next_value = self.critic_target_network(inputs_next_norm_tensor, actions_next)
+            # actions_next = self.actor_target_network(inputs_next_norm_tensor)
+            # q_next_value = self.critic_target_network(inputs_next_norm_tensor, actions_next)
+            actions_next = self.actor_target_network(o_next[0], inputs_next_norm_tensor)
+            q_next_value = self.critic_target_network(o_next[0], inputs_next_norm_tensor, actions_next)
             q_next_value = q_next_value.detach()
             target_q_value = r_tensor + self.args.gamma * q_next_value
             target_q_value = target_q_value.detach()
@@ -236,11 +266,11 @@ class ddpg_agent:
             clip_return = 1 / (1 - self.args.gamma)
             target_q_value = torch.clamp(target_q_value, -clip_return, 0)
         # the q loss
-        real_q_value = self.critic_network(inputs_norm_tensor, actions_tensor)
+        real_q_value = self.critic_network(o[0], inputs_norm_tensor, actions_tensor)
         critic_loss = (target_q_value - real_q_value).pow(2).mean()
         # the actor loss
-        actions_real = self.actor_network(inputs_norm_tensor)
-        actor_loss = -self.critic_network(inputs_norm_tensor, actions_real).mean()
+        actions_real = self.actor_network(o[0], inputs_norm_tensor)
+        actor_loss = -self.critic_network(o[0], inputs_norm_tensor, actions_real).mean()
         actor_loss += self.args.action_l2 * (actions_real / self.env_params['action_max']).pow(2).mean()
         # start to update the network
         self.actor_optim.zero_grad()
@@ -255,21 +285,27 @@ class ddpg_agent:
 
     # do the evaluation
     def _eval_agent(self):
+
         total_success_rate = []
         for _ in range(self.args.n_test_rollouts):
             per_success_rate = []
             observation = self.env.reset()
             obs = observation['observation']
+            obs = self.env.capture()  # -> (1050, 1680, 3)
+            obs = self.resize_observe(obs)
             g = observation['desired_goal']
             for _ in range(self.env_params['max_timesteps']):
                 with torch.no_grad():
-                    input_tensor = self._preproc_inputs(obs, g)
-                    pi = self.actor_network(input_tensor)
+                    _obs, input_tensor = self._preproc_inputs(obs, g)
+                    pi = self.actor_network(_obs, input_tensor)
+                    action = self._select_actions(pi)
                     # convert the actions
                     actions = pi.detach().cpu().numpy().squeeze()
                 observation_new, _, _, info = self.env.step(actions)
                 self.env.render()
                 obs = observation_new['observation']
+                obs = self.env.capture()  # -> (1050, 1680, 3)
+                obs = self.resize_observe(obs)
                 g = observation_new['desired_goal']
                 per_success_rate.append(info['is_success'])
             total_success_rate.append(per_success_rate)
@@ -283,9 +319,13 @@ class ddpg_agent:
     def _load_weights(self, actor_net, critic_net):
         actor_net.load_state_dict(torch.load(self.weight_save_dir + 'actor_' + str(self.learning_from)))
         critic_net.load_state_dict(torch.load(self.weight_save_dir + 'critic_' + str(self.learning_from)))
-        return actor_net, critic_net
+        g_norm_mean = torch.load(self.weight_save_dir + 'g_norm_mean_' + str(save_num+self.learning_from))
+        g_norm_std = torch.load(self.weight_save_dir + 'g_norm_std_' + str(save_num+self.learning_from))
+        return actor_net, critic_net, g_norm_mean, g_norm_std
     
-    def _save_weights(self, actor_net, critic_net, save_num):
+    def _save_weights(self, actor_net, critic_net, g_norm_mean, g_norm_std, save_num):
         torch.save(actor_net.state_dict(), self.weight_save_dir + 'actor_' + str(save_num+self.learning_from))
         torch.save(critic_net.state_dict(), self.weight_save_dir + 'critic_' + str(save_num+self.learning_from))
+        torch.save(g_norm_mean, self.weight_save_dir + 'g_norm_mean_' + str(save_num+self.learning_from))
+        torch.save(g_norm_std, self.weight_save_dir + 'g_norm_std' + str(save_num+self.learning_from))
 
