@@ -9,7 +9,10 @@ from replay_buffer import replay_buffer
 from normalizer import normalizer
 from her import her_sampler
 from tqdm import tqdm
+from collections import deque
+import copy
 
+from torch.utils.tensorboard import SummaryWriter
 import cv2
 from PIL import Image
 import slackweb
@@ -75,6 +78,11 @@ class ddpg_agent:
             if not os.path.exists(self.model_path):
                 os.mkdir(self.model_path)
         
+        self._frames = deque(maxlen=args.n_frames)
+
+        log_dir = 'tmp/dobot/logs/' + 'no-domain-random'
+        self.writer = SummaryWriter(log_dir=log_dir)
+
         self.slack = slackweb.Slack(url=config.URL)
         self.slack.notify(text='===============================')
         self.slack.notify(text='==== Training Start from {} !! ===='.format(self.learning_from))
@@ -86,12 +94,14 @@ class ddpg_agent:
 
         """
         # start to collect samples
-        for epoch in range(self.args.n_epochs):
+        for epoch in range(1, self.args.n_epochs+1):
             for _ in tqdm(range(self.args.n_cycles)):
-                mb_obs, mb_ag, mb_g, mb_actions = [], [], [], []
+                mb_obs, mb_ag, mb_g, mb_actions, rewards = [], [], [], [], []
                 for _ in range(self.args.num_rollouts_per_mpi):
                     # reset the rollouts
                     ep_obs, ep_ag, ep_g, ep_actions = [], [], [], []
+                    # cumilitive reward
+                    cum_reward = 0
                     # reset the environment
                     observation = self.env.reset()
                     # obs = observation['observation']
@@ -100,37 +110,48 @@ class ddpg_agent:
                     self.env.render('rgb_array')
                     obs = self.env.capture()  # -> (1050, 1680, 3)
                     obs = self.resize_observe(obs)
+                    for _ in range(self.args.n_frames):
+                        self._frames.append(obs)
                     # start to collect samples
                     for t in range(self.env_params['max_timesteps']):
                         with torch.no_grad():
-                            _obs, input_tensor = self._preproc_inputs(obs, g)
+                            _obs, input_tensor = self._preproc_inputs(np.vstack(self._frames), g)
+                            # _obs, input_tensor = self._preproc_inputs(obs, g)
                             pi = self.actor_network(_obs, input_tensor)
                             action = self._select_actions(pi)
                         # feed the actions into the environment
-                        observation_new, _, _, info = self.env.step(action)
+                        observation_new, reward, _, info = self.env.step(action)
+                        cum_reward += reward
                         # obs_new = observation_new['observation']
                         obs_new = self.env.capture()
+                        # obs_new = cv2.resize(obs_new, (128, 128))   # input image save
+                        # cv2.imwrite('abs.png', obs_new)    # input image save
                         ag_new = observation_new['achieved_goal']
                         # append rollouts
-                        ep_obs.append(obs.copy())
+                        # ep_obs.append(obs.copy())
+                        ep_obs.append(np.vstack(self._frames.copy()))
                         ep_ag.append(ag.copy())
                         ep_g.append(g.copy())
                         ep_actions.append(action.copy())
                         # re-assign the observation
                         obs = obs_new
                         obs = self.resize_observe(obs)
+                        self._frames.append(obs)
                         ag = ag_new
-                    ep_obs.append(obs.copy())
+                    # ep_obs.append(obs.copy())
+                    ep_obs.append(np.vstack(self._frames))
                     ep_ag.append(ag.copy())
                     mb_obs.append(np.array(ep_obs))
                     mb_ag.append(ep_ag)
                     mb_g.append(ep_g)
                     mb_actions.append(ep_actions)
+                    rewards.append(cum_reward)
                 # convert them into arrays
                 mb_obs = np.array(mb_obs)
                 mb_ag = np.array(mb_ag)
                 mb_g = np.array(mb_g)
                 mb_actions = np.array(mb_actions)
+                self.writer.add_scalar("score/avg_reward", np.mean(np.array(rewards)), epoch+self.learning_from)
                 # store the episodes
                 self.buffer.store_episode([mb_obs, mb_ag, mb_g, mb_actions])
                 self._update_normalizer([mb_obs, mb_ag, mb_g, mb_actions])
@@ -152,7 +173,7 @@ class ddpg_agent:
     
     # resize observed image
     def resize_observe(self, obs):
-        obs = cv2.resize(obs, (256, 256))
+        obs = cv2.resize(obs, (128, 128))
         obs = obs.transpose((2, 0, 1))
         return obs
 
@@ -293,12 +314,14 @@ class ddpg_agent:
             obs = observation['observation']
             obs = self.env.capture()  # -> (1050, 1680, 3)
             obs = self.resize_observe(obs)
+            for _ in range(self.args.n_frames):
+                        self._frames.append(obs)
             g = observation['desired_goal']
             for _ in range(self.env_params['max_timesteps']):
                 with torch.no_grad():
-                    _obs, input_tensor = self._preproc_inputs(obs, g)
+                    _obs, input_tensor = self._preproc_inputs(np.vstack(self._frames), g)
+                    # _obs, input_tensor = self._preproc_inputs(obs, g)
                     pi = self.actor_network(_obs, input_tensor)
-                    action = self._select_actions(pi)
                     # convert the actions
                     actions = pi.detach().cpu().numpy().squeeze()
                 observation_new, _, _, info = self.env.step(actions)
@@ -306,6 +329,7 @@ class ddpg_agent:
                 obs = observation_new['observation']
                 obs = self.env.capture()  # -> (1050, 1680, 3)
                 obs = self.resize_observe(obs)
+                self._frames.append(obs)
                 g = observation_new['desired_goal']
                 per_success_rate.append(info['is_success'])
             total_success_rate.append(per_success_rate)

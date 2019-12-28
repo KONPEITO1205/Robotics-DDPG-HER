@@ -16,7 +16,7 @@ class replay_buffer:
         self.sample_func = sample_func
         # create the buffer to store info
         # self.buffers = {'obs': np.empty([self.size, self.T + 1, self.env_params['obs']]),
-        self.buffers = {'obs': np.empty([self.size, self.T + 1, 3, 256, 256], dtype=np.uint8),
+        self.buffers = {'obs': np.empty([self.size, self.T + 1, 12, 128, 128], dtype=np.uint8),
                         'ag': np.empty([self.size, self.T + 1, self.env_params['goal']]),
                         'g': np.empty([self.size, self.T, self.env_params['goal']]),
                         'actions': np.empty([self.size, self.T, self.env_params['action']]),

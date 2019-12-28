@@ -35,7 +35,8 @@ def get_args():
     parser.add_argument('--cuda', action='store_true', help='if use gpu do the acceleration')
     parser.add_argument('--num-rollouts-per-mpi', type=int, default=2, help='the rollouts per mpi')
     parser.add_argument('--learning-from', type=int, default=0, help='learning start from which weight')
-    parser.add_argument('--input-channel', type=int, default=3, help='the number of input channel for comvolutional layer')
+    parser.add_argument('--input-channel', type=int, default=12, help='the number of input channel for comvolutional layer')
+    parser.add_argument('--n-frames', type=int, default=4, help='the number of concat frames')
 
     args = parser.parse_args()
 
