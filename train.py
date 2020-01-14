@@ -37,7 +37,7 @@ def env_wrapper(env):
 def launch(args):
     # create the ddpg_agent
     # env = gym.make(args.env_name)
-    env = env_wrapper(gym.make(args.env_name, rand_dom=1))
+    env = env_wrapper(gym.make(args.env_name, rand_dom=0))
     # get the environment parameters
     env_params = get_env_params(env)
     # create the ddpg agent to interact with the environment 

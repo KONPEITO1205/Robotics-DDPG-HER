@@ -9,18 +9,19 @@ class replay_buffer:
     def __init__(self, env_params, buffer_size, sample_func):
         self.env_params = env_params
         self.T = env_params['max_timesteps']
+        self.T = 13 # when 10 frame skipping
         self.size = buffer_size // self.T
+        print('memory size : ', self.size)
         # memory management
         self.current_size = 0
         self.n_transitions_stored = 0
         self.sample_func = sample_func
         # create the buffer to store info
-        # self.buffers = {'obs': np.empty([self.size, self.T + 1, self.env_params['obs']]),
         self.buffers = {'obs': np.empty([self.size, self.T + 1, 12, 128, 128], dtype=np.uint8),
-                        'ag': np.empty([self.size, self.T + 1, self.env_params['goal']]),
-                        'g': np.empty([self.size, self.T, self.env_params['goal']]),
-                        'actions': np.empty([self.size, self.T, self.env_params['action']]),
-                        }
+                       'ag': np.empty([self.size, self.T + 1, self.env_params['goal']]),
+                       'g': np.empty([self.size, self.T, self.env_params['goal']]),
+                       'actions': np.empty([self.size, self.T, self.env_params['action']]),
+                       }
         # thread lock
         self.lock = threading.Lock()
     
@@ -63,4 +64,10 @@ class replay_buffer:
         self.current_size = min(self.size, self.current_size+inc)
         if inc == 1:
             idx = idx[0]
+        print(idx)
         return idx
+    
+    def save_buffer(self):
+        np.savez_compressed('buffer.npz', array_1=self.buffers['obs'], 
+        array_2=self.buffers['ag'], array_3=self.buffers['g'], 
+        array_4=self.buffers['actions'])

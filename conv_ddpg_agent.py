@@ -14,7 +14,6 @@ import copy
 
 from torch.utils.tensorboard import SummaryWriter
 import cv2
-from PIL import Image
 import slackweb
 
 import config
@@ -31,7 +30,7 @@ class ddpg_agent:
 
         # learning time start from: -> int 
         self.learning_from = self.args.learning_from
-        self.weight_save_dir = 'conv_weight_dir/'
+        self.weight_save_dir = '1sec_skip_conv_weight_dir/'
 
         # create the network
         # self.actor_network = actor(env_params, args).double()
@@ -80,7 +79,7 @@ class ddpg_agent:
         
         self._frames = deque(maxlen=args.n_frames)
 
-        log_dir = 'tmp/dobot/logs/' + 'no-domain-random'
+        log_dir = 'tmp/dobot/logs/' + 'no-domain-random-10frame-skipping'
         self.writer = SummaryWriter(log_dir=log_dir)
 
         self.slack = slackweb.Slack(url=config.URL)
@@ -95,6 +94,7 @@ class ddpg_agent:
         """
         # start to collect samples
         for epoch in range(1, self.args.n_epochs+1):
+            rewards = []
             for _ in tqdm(range(self.args.n_cycles)):
                 mb_obs, mb_ag, mb_g, mb_actions, rewards = [], [], [], [], []
                 for _ in range(self.args.num_rollouts_per_mpi):
@@ -113,13 +113,15 @@ class ddpg_agent:
                     for _ in range(self.args.n_frames):
                         self._frames.append(obs)
                     # start to collect samples
-                    for t in range(self.env_params['max_timesteps']):
+                    for t in range(self.env_params['max_timesteps']//self.args.n_skip_frames):
                         with torch.no_grad():
                             _obs, input_tensor = self._preproc_inputs(np.vstack(self._frames), g)
                             # _obs, input_tensor = self._preproc_inputs(obs, g)
                             pi = self.actor_network(_obs, input_tensor)
                             action = self._select_actions(pi)
                         # feed the actions into the environment
+                        for _ in range(self.args.n_skip_frames):
+                            _, _, _, _ = self.env.step(action)
                         observation_new, reward, _, info = self.env.step(action)
                         cum_reward += reward
                         # obs_new = observation_new['observation']
@@ -151,7 +153,6 @@ class ddpg_agent:
                 mb_ag = np.array(mb_ag)
                 mb_g = np.array(mb_g)
                 mb_actions = np.array(mb_actions)
-                self.writer.add_scalar("score/avg_reward", np.mean(np.array(rewards)), epoch+self.learning_from)
                 # store the episodes
                 self.buffer.store_episode([mb_obs, mb_ag, mb_g, mb_actions])
                 self._update_normalizer([mb_obs, mb_ag, mb_g, mb_actions])
@@ -162,6 +163,7 @@ class ddpg_agent:
                 self._soft_update_target_network(self.actor_target_network, self.actor_network)
                 self._soft_update_target_network(self.critic_target_network, self.critic_network)
             # start to do the evaluation
+            self.writer.add_scalar("score/avg_reward", np.mean(np.array(rewards)), epoch+self.learning_from)
             success_rate = self._eval_agent()
             if MPI.COMM_WORLD.Get_rank() == 0:
                 text = '[{}] epoch is: {}, eval success rate is: {:.3f}'.format(datetime.now(), epoch+self.learning_from, success_rate)
@@ -170,6 +172,8 @@ class ddpg_agent:
                 torch.save([self.o_norm.mean, self.o_norm.std, self.g_norm.mean, self.g_norm.std, self.actor_network.state_dict()], \
                             self.model_path + '/model.pt')
             self._save_weights(self.actor_network, self.critic_network, self.g_norm.mean, self.g_norm.std, epoch)
+            self.buffer.save_buffer()
+
     
     # resize observed image
     def resize_observe(self, obs):
@@ -317,13 +321,15 @@ class ddpg_agent:
             for _ in range(self.args.n_frames):
                         self._frames.append(obs)
             g = observation['desired_goal']
-            for _ in range(self.env_params['max_timesteps']):
+            for _ in range(self.env_params['max_timesteps']//self.args.n_skip_frames):
                 with torch.no_grad():
                     _obs, input_tensor = self._preproc_inputs(np.vstack(self._frames), g)
                     # _obs, input_tensor = self._preproc_inputs(obs, g)
                     pi = self.actor_network(_obs, input_tensor)
                     # convert the actions
                     actions = pi.detach().cpu().numpy().squeeze()
+                for _ in range(self.args.n_skip_frames):
+                            _, _, _, _ = self.env.step(actions)
                 observation_new, _, _, info = self.env.step(actions)
                 self.env.render()
                 obs = observation_new['observation']
@@ -352,4 +358,4 @@ class ddpg_agent:
         torch.save(critic_net.state_dict(), self.weight_save_dir + 'critic_' + str(save_num+self.learning_from))
         torch.save(g_norm_mean, self.weight_save_dir + 'g_norm_mean_' + str(save_num+self.learning_from))
         torch.save(g_norm_std, self.weight_save_dir + 'g_norm_std_' + str(save_num+self.learning_from))
-
+    
