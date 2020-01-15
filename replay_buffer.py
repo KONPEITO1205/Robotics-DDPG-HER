@@ -8,8 +8,7 @@ the replay buffer here is basically from the openai baselines code
 class replay_buffer:
     def __init__(self, env_params, buffer_size, sample_func):
         self.env_params = env_params
-        self.T = env_params['max_timesteps']
-        self.T = 13 # when 10 frame skipping
+        self.T = env_params['max_timesteps']//5
         self.size = buffer_size // self.T
         print('memory size : ', self.size)
         # memory management
@@ -64,10 +63,17 @@ class replay_buffer:
         self.current_size = min(self.size, self.current_size+inc)
         if inc == 1:
             idx = idx[0]
-        print(idx)
         return idx
     
     def save_buffer(self):
-        np.savez_compressed('buffer.npz', array_1=self.buffers['obs'], 
-        array_2=self.buffers['ag'], array_3=self.buffers['g'], 
-        array_4=self.buffers['actions'])
+        np.savez_compressed('buffer.npz', obs=self.buffers['obs'], 
+        ag=self.buffers['ag'], g=self.buffers['g'], 
+        actions=self.buffers['actions'])
+    
+    def load_buffer(self):
+        # rename arrayX to obs, ag, g, actions
+        _buffer = np.load('buffer.npz')
+        self.buffers['obs'] = _buffer['array_1']
+        self.buffers['ag'] = _buffer['array_2']
+        self.buffers['g'] = _buffer['array_3']
+        self.buffers['actions'] = _buffer['array_4']
