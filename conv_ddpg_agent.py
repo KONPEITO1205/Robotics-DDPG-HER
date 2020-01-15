@@ -68,6 +68,8 @@ class ddpg_agent:
         self.her_module = her_sampler(self.args.replay_strategy, self.args.replay_k, self.env.compute_reward)
         # create the replay buffer
         self.buffer = replay_buffer(self.env_params, self.args.buffer_size, self.her_module.sample_her_transitions)
+        if self.learning_from:
+            self.buffer.load_buffer()
         # create the dict for store the model
         if MPI.COMM_WORLD.Get_rank() == 0:
             if not os.path.exists(self.args.save_dir):
@@ -79,7 +81,7 @@ class ddpg_agent:
         
         self._frames = deque(maxlen=args.n_frames)
 
-        log_dir = 'tmp/dobot/logs/' + 'no-domain-random-10frame-skipping'
+        log_dir = 'tmp/dobot/logs/' + 'no-domain-random-1sec-skipping-exploration'
         self.writer = SummaryWriter(log_dir=log_dir)
 
         self.slack = slackweb.Slack(url=config.URL)
@@ -113,7 +115,7 @@ class ddpg_agent:
                     for _ in range(self.args.n_frames):
                         self._frames.append(obs)
                     # start to collect samples
-                    for t in range(self.env_params['max_timesteps']//self.args.n_skip_frames):
+                    for t in range(self.env_params['max_timesteps']//5):
                         with torch.no_grad():
                             _obs, input_tensor = self._preproc_inputs(np.vstack(self._frames), g)
                             # _obs, input_tensor = self._preproc_inputs(obs, g)
@@ -321,7 +323,7 @@ class ddpg_agent:
             for _ in range(self.args.n_frames):
                         self._frames.append(obs)
             g = observation['desired_goal']
-            for _ in range(self.env_params['max_timesteps']//self.args.n_skip_frames):
+            for _ in range(self.env_params['max_timesteps']):
                 with torch.no_grad():
                     _obs, input_tensor = self._preproc_inputs(np.vstack(self._frames), g)
                     # _obs, input_tensor = self._preproc_inputs(obs, g)
